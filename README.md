@@ -58,8 +58,8 @@ pip install pillow
 ### 2. Clone this repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/xteink-manga-tools.git
-cd xteink-manga-tools
+git clone https://github.com/tazua/cbz2xtc.git
+cd cbz2xtc
 ```
 
 ### 3. Install epub2xtc
