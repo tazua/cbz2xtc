@@ -16,7 +16,7 @@ import zipfile
 import shutil
 import subprocess
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps, ImageDraw, ImageFont
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
@@ -54,6 +54,7 @@ def find_png2xtc():
     
     for path in possible_paths:
         if path.exists():
+            # print("png2xtc exists at ",path) # debugging.
             return path
     
     return None
@@ -62,7 +63,9 @@ def find_png2xtc():
 def optimize_image(img_data, output_path_base, page_num):
     """
     Optimize image for XTEink X4:
-    - Split image in half horizontally
+    - crop off image margins (if active)
+    - Increase image contrast (unless disabled)
+    - Split image in half or overlapping thirds horizontally
     - Rotate each half 90° clockwise
     - Resize to fit 480x800 with white padding
     - Convert to grayscale
@@ -70,31 +73,179 @@ def optimize_image(img_data, output_path_base, page_num):
     """
     try:
         from io import BytesIO
-        img = Image.open(BytesIO(img_data))
+        uncropped_img = Image.open(BytesIO(img_data))
         
+        if SKIP_ON:
+            if str(page_num) in SKIP_PAGES: 
+                print("skipping page:",page_num)
+                return 0
+
+        if ONLY_ON:
+            if str(page_num) not in ONLY_PAGES: 
+                return 0
+
+        if SAMPLE_SET:
+            if str(page_num) in SAMPLE_PAGES:
+                if uncropped_img.mode != 'L':
+                    uncropped_img = uncropped_img.convert('L')
+                font = ImageFont.load_default(size=100)
+                text_color = 0
+                box_color = 255
+                print("creating samples for page:",page_num)
+                width, height = uncropped_img.size
+                text_position = (width//8,height//2)
+                # box_position = [(width//8)-10, (height//2)-10, (width//8)+200, (height//2)+40]
+                box_position = ((width//8)-30, (height//2), (width//8)+496, (height//2)+120)
+                width_proportion = width / 800
+                overlapping_third_height = 480 * width_proportion // 1
+                shiftdown_to_overlap = overlapping_third_height - (overlapping_third_height * 3 - height) // 2
+                contrast_set = 0
+                while contrast_set < 9:
+                    black_cutoff = 3 * contrast_set
+                    white_cutoff = 3 + 9 * contrast_set
+                    page_view = ImageOps.autocontrast(uncropped_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
+                    draw = ImageDraw.Draw(page_view)
+                    draw.rounded_rectangle(box_position, radius=60, fill=box_color, outline=text_color, width=6, corners=(False,True,False,True))
+                    draw.text(text_position, f"Contrast {contrast_set}", fill=text_color, font=font)
+                    output_page = output_path_base.parent / f"{page_num:04d}_0_contrast{contrast_set}.png"
+                    save_with_padding(page_view, output_page)
+                    middle_third = page_view.crop((0, shiftdown_to_overlap, width, height - shiftdown_to_overlap))
+                    middle_rotated = middle_third.rotate(-90, expand=True)
+                    output_middle = output_path_base.parent / f"{page_num:04d}_3_b_contrast{contrast_set}.png"
+                    save_with_padding(middle_rotated, output_middle)
+                    contrast_set += 1
+                crop_set = 0.0
+                contrast3img = ImageOps.autocontrast(uncropped_img, cutoff=(9,30), preserve_tone=True)
+                while crop_set < 10:
+                    allaroundcrop = crop_set
+                    page_view = contrast3img.crop((int(allaroundcrop/100.0*width), int(allaroundcrop/100.0*height), width-int(allaroundcrop/100.0*width), height-int(allaroundcrop/100.0*height)))
+                    draw = ImageDraw.Draw(page_view)
+                    draw.rounded_rectangle(box_position, radius=60, fill=box_color, outline=text_color, width=6, corners=(False,True,False,True))
+                    draw.text(text_position, f"Margin {crop_set}", fill=text_color, font=font)
+                    output_page = output_path_base.parent / f"{page_num:04d}_9_margin{crop_set}.png"
+                    save_with_padding(page_view, output_page, padcolor=30)                    
+                    crop_set += 0.5
+            else:
+                pass
+                # print("skipping page:",page_num)
+            return 0
+
+        #enhance contrast
+        if CONTRAST_BOOST:
+            if CONTRAST_VALUE == "0":
+                pass  # we don't need to adjust contrast at all.
+            elif len(CONTRAST_VALUE.split(',')) > 1:
+                #passed a list of 2, first is dark cutoff, second is bright cutoff.
+                black_cutoff = 3 * int(CONTRAST_VALUE.split(',')[0])
+                white_cutoff = 3 + 9 * int(CONTRAST_VALUE.split(',')[1])
+                uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
+            elif int(CONTRAST_VALUE) < 0 or int(CONTRAST_VALUE) > 8:
+                pass # value out of range. we'll treat like 0.
+            else:
+                black_cutoff = 3 * int(CONTRAST_VALUE)
+                white_cutoff = 3 + 9 * int(CONTRAST_VALUE)
+                uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
+        else:
+            # nothing set, so we go with the default value of 4. 
+            black_cutoff = 3 * 4    # default, contrast level 4 = 12
+            white_cutoff = 3 + 9 * 4    # default, contrast level 4 = 39
+            uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
+            # uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(8,35), preserve_tone=True)
+
         # Convert to grayscale
-        if img.mode != 'L':
-            img = img.convert('L')
+        if uncropped_img.mode != 'L':
+            uncropped_img = uncropped_img.convert('L')
         
+        img = uncropped_img
+        width, height = img.size
+
+        #crop margins in percentage. 
+        if MARGIN:
+            if MARGIN_VALUE == "0":
+                pass #we don't need to do margins at all.
+            elif len(MARGIN_VALUE.split(',')) > 1:
+                marginlist = MARGIN_VALUE.split(',')
+                marginlist.append("0")
+                marginlist.append("0") # 2 0s just in case there aren't four values.
+                leftcrop = float(marginlist[0])
+                topcrop = float(marginlist[1])
+                rightcrop = float(marginlist[2])
+                bottomcrop = float(marginlist[3])
+                img = uncropped_img.crop((int(leftcrop/100.0*width), int(topcrop/100.0*height), width-int(rightcrop/100.0*width), height-int(bottomcrop/100.0*height)))
+            else:
+                allaroundcrop = float(MARGIN_VALUE);
+                img = uncropped_img.crop((int(allaroundcrop/100.0*width), int(allaroundcrop/100.0*height), width-int(allaroundcrop/100.0*width), height-int(allaroundcrop/100.0*height)))
+
         width, height = img.size
         half_height = height // 2
-        
         total_size = 0
+
+        if str(page_num) not in DONT_SPLIT_PAGES and (SPLIT_ALL or width < height):
+
+            if INCLUDE_OVERVIEWS or SIDEWAYS_OVERVIEWS:
+                # Process overview page
+                page_view = uncropped_img;
+                if not SIDEWAYS_OVERVIEWS:
+                    page_view = uncropped_img.rotate(-90, expand=True)
+                output_page = output_path_base.parent / f"{page_num:04d}_0_overview.png"
+                save_with_padding(page_view, output_page)
+
+            if OVERLAP:
+                width_proportion = width / 800
+                overlapping_third_height = 480 * width_proportion // 1
+                shiftdown_to_overlap = overlapping_third_height - (overlapping_third_height * 3 - height) // 2
+
+                # Process top third
+                top_third = img.crop((0, 0, width, overlapping_third_height))
+                top_rotated = top_third.rotate(-90, expand=True)
+                output_top = output_path_base.parent / f"{page_num:04d}_3_a.png"
+                size = save_with_padding(top_rotated, output_top)
+                total_size += size;
+
+                # Process middle third
+                middle_third = img.crop((0, shiftdown_to_overlap, width, height - shiftdown_to_overlap))
+                middle_rotated = middle_third.rotate(-90, expand=True)
+                output_middle = output_path_base.parent / f"{page_num:04d}_3_b.png"
+                size = save_with_padding(middle_rotated, output_middle)
+                total_size += size;
+
+                # Process middle third
+                bottom_third = img.crop((0, shiftdown_to_overlap*2, width, height))
+                bottom_rotated = bottom_third.rotate(-90, expand=True)
+                output_bottom = output_path_base.parent / f"{page_num:04d}_3_c.png"
+                size = save_with_padding(bottom_rotated, output_bottom)
+                total_size += size;
+
+            else:
+                # Process top half
+                top_half = img.crop((0, 0, width, half_height))
+                top_rotated = top_half.rotate(-90, expand=True)
+                output_top = output_path_base.parent / f"{page_num:04d}_2_a.png"
+                size = save_with_padding(top_rotated, output_top)
+                total_size += size
+                
+                # Process bottom half
+                bottom_half = img.crop((0, half_height, width, height))
+                bottom_rotated = bottom_half.rotate(-90, expand=True)
+                output_bottom = output_path_base.parent / f"{page_num:04d}_2_b.png"
+                size = save_with_padding(bottom_rotated, output_bottom)
+                total_size += size
         
-        # Process top half
-        top_half = img.crop((0, 0, width, half_height))
-        top_rotated = top_half.rotate(-90, expand=True)
-        output_top = output_path_base.parent / f"{page_num:04d}_a.png"
-        size = save_with_padding(top_rotated, output_top)
-        total_size += size
-        
-        # Process bottom half
-        bottom_half = img.crop((0, half_height, width, height))
-        bottom_rotated = bottom_half.rotate(-90, expand=True)
-        output_bottom = output_path_base.parent / f"{page_num:04d}_b.png"
-        size = save_with_padding(bottom_rotated, output_bottom)
-        total_size += size
-        
+        elif width >= height:
+            # Process wide page
+            # top_half = img.crop((0, 0, width, half_height))
+            page_rotated = img.rotate(-90, expand=True)
+            output_page = output_path_base.parent / f"{page_num:04d}_0_spread.png"
+            size = save_with_padding(page_rotated, output_page)
+            total_size += size
+        else: 
+            # This is a dont-split page, treat like overview page
+            page_view = uncropped_img;
+            if not SIDEWAYS_OVERVIEWS:
+                page_view = uncropped_img.rotate(-90, expand=True)
+            output_page = output_path_base.parent / f"{page_num:04d}_0_overview.png"
+            save_with_padding(page_view, output_page)
+
         return total_size
         
     except Exception as e:
@@ -102,7 +253,7 @@ def optimize_image(img_data, output_path_base, page_num):
         return 0
 
 
-def save_with_padding(img, output_path):
+def save_with_padding(img, output_path, *, padcolor=255):
     """
     Resize image to fit within 480x800 and add white padding
     Optionally apply dithering for better B&W conversion
@@ -122,8 +273,8 @@ def save_with_padding(img, output_path):
         # Convert back to grayscale mode so we can paste on white background
         img_resized = img_resized.convert('L')
     
-    # Create WHITE background
-    result = Image.new('L', (TARGET_WIDTH, TARGET_HEIGHT), color=255)
+    # Create background (default padcolor is white)
+    result = Image.new('L', (TARGET_WIDTH, TARGET_HEIGHT), color=padcolor)
     
     # Center the image
     x = (TARGET_WIDTH - new_width) // 2
@@ -182,8 +333,11 @@ def convert_png_folder_to_xtc(png_folder, output_file):
         return False
     
     try:
+        # print("trying path:",str(png2xtc_path))
         result = subprocess.run(
             ["python", str(png2xtc_path), str(png_folder), str(output_file)],
+            # I had to use the following instead to make this work on my Mac.
+            # ["python3", str(png2xtc_path) + "/png2xtc.py", str(png_folder), str(output_file)],
             capture_output=True,
             text=True,
             timeout=300  # 5 minute timeout
@@ -250,8 +404,45 @@ def main():
         print("                dithering is ENABLED for better grayscale to")
         print("                black & white conversion. Use this flag for pure")
         print("                threshold conversion (sharper for clean line art).")
+        print("\n  --overlap     Split into 3 overlapping screen-filling pieces instead")
+        print("                of 2 non-overlapping pieces that may leave margins.")
+        print("\n  --split-all   Splits ALL pages into pieces, even if those pages")
+        print("                are wider than they are tall.")
+        print("\n  --skip <pagenum> or <pagenum,pagenum,pagenum...>   skips page")
+        print("                or pages entirely.")
+        print("\n  --only <pagenum> or <pagenum,pagenum,pagenum...>   only renders")
+        print("                the selected page or pages. Tip: If you don't use")
+        print("                --clean, this can be used to rerender a problematic")
+        print("                page or pages with different settings than the rest.")
+        print("\n  --dont-split <pagenum> or <pagenum,pagenum,pagenum...>   don't split")
+        print("                page or pages, will use an overview instead (vertical if")
+        print("                --sideways-overviews is unset.) For covers and splash pages.")
+        print("\n  --contrast-boost <0-8> or <#,#>   Enhances contrast by clipping off,")
+        print("                brightest and darkest parts of the image. 0=no boost,")
+        print("                4=strong (default), 6=very strong, 8=insane. If you")
+        print("                specify two values with a comma, the first will be used")
+        print("                for dark parts, and the second for light parts.")
+        print("                in general, text will be more readable by increasing")
+        print("                dark contrast, and images will gain clarity by")
+        print("                increasing light contrast.")
+        print("\n  --margin <integer> or <left,top,right,bottom>   crops off page")
+        print("                margins by a percentage of the width or height.")
+        print("                Use a single number to crop from all sides equally, or")
+        print("                specify the cropping for each side in LTRB order")
+        print("                (margin crop is not applied to overview pages.)")
+        print("\n  --include-overviews   Show an overview of each page before the")
+        print("                split pieces.")
+        print("\n  --sideways-overviews   Show a rotated overview of each page before")
+        print("                the split pieces. (better quality, but will require)")
+        print("                reader to turn their device sideways)")
+        print("\n  --sample-set <pagenum> or <pagenum,pagenum,pagenum...>  Build a")
+        print("                spread of contrast and margin samples for a page or")
+        print("                list of pages. Useful for evaluating what settings")
+        print("                you want to use. Does contrasts 0-8, margin 0-10 percent")
         print("\n  --clean       Automatically delete temporary PNG files after")
-        print("                conversion. Saves disk space.")
+        print("                conversion. Saves disk space and prevents leftover")
+        print("                files from interfering with conversions using different")
+        print("                split or overview settings.")
         print("\n  --help, -h    Show this help message")
         print("\nWhat it does:")
         print("  1. Extracts images from CBZ files")
@@ -267,15 +458,84 @@ def main():
         print("  cbz2xtc                           # Basic conversion (with dithering)")
         print("  cbz2xtc --clean                   # With cleanup")
         print("  cbz2xtc --no-dither               # Without dithering")
+        print("  cbz2xtc --contrast 3,5 --margin 5,3,5,3   # good trial")
+        print("                     # settings for a mainstream comic.")
+        print("  cbz2xtc --dont-split 1            # show cover as single image")
         print("  cbz2xtc D:\\manga --clean          # Specific folder + cleanup")
         return 0
     
     # Parse arguments
     global USE_DITHERING
+    global OVERLAP
+    global SPLIT_ALL
+    global SKIP_ON
+    global SKIP_PAGES
+    global ONLY_ON
+    global ONLY_PAGES
+    global DONT_SPLIT
+    global DONT_SPLIT_PAGES
+    global CONTRAST_BOOST
+    global CONTRAST_VALUE
+    global MARGIN
+    global MARGIN_VALUE
+    global INCLUDE_OVERVIEWS
+    global SIDEWAYS_OVERVIEWS
+    global SAMPLE_SET
+    global SAMPLE_PAGES
+
+
     clean_temp = "--clean" in sys.argv
     USE_DITHERING = "--no-dither" not in sys.argv  # Inverted logic
-    args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+    OVERLAP = "--overlap" in sys.argv
+    SPLIT_ALL = "--split-all" in sys.argv
+    SKIP_ON = "--skip" in sys.argv
+    ONLY_ON = "--only" in sys.argv
+    DONT_SPLIT = "--dont-split" in sys.argv
+    CONTRAST_BOOST = "--contrast-boost" in sys.argv
+    MARGIN = "--margin" in sys.argv
+    INCLUDE_OVERVIEWS = "--include-overviews" in sys.argv
+    SIDEWAYS_OVERVIEWS = "--sideways-overviews" in sys.argv
+    SAMPLE_SET = "--sample-set" in sys.argv
+    SKIP_PAGES = []
+    ONLY_PAGES = []
+    DONT_SPLIT_PAGES = []
+    # args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
     
+    i = 1
+    args = []
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg == "--skip":
+            SKIP_PAGES = sys.argv[i+1].split(',')
+            print("Will skip pages:", SKIP_PAGES)
+            # skip the next arg, as it's sample pages parameter.
+            i += 1
+        elif arg == "--only":
+            ONLY_PAGES = sys.argv[i+1].split(',')
+            print("Will only do pages:", ONLY_PAGES)
+            i += 1 #skip next arg
+        elif arg == "--dont-split":
+            DONT_SPLIT_PAGES = sys.argv[i+1].split(',')
+            print("Will not split pages:", DONT_SPLIT_PAGES)
+            i += 1 #skip next arg
+        elif arg == "--contrast-boost":
+            CONTRAST_VALUE = sys.argv[i+1]
+            print("Contrast setting:", CONTRAST_VALUE)
+            i += 1 #skip next arg
+        elif arg == "--margin":
+            MARGIN_VALUE = sys.argv[i+1]
+            print("Margin setting:", MARGIN_VALUE)
+            i += 1 #skip next arg
+        elif arg == "--sample-set":
+            SAMPLE_PAGES = sys.argv[i+1].split(',')
+            print("Sample Mode for pages:", SAMPLE_PAGES)
+            i += 1 #skip next arg
+        elif arg.startswith("--"):
+            pass # do nothing, it's boolean and handled above.
+        else:
+            args.append(arg) # it's supposed to be a path.
+        i += 1
+
     # Get input directory
     if args:
         input_dir = Path(args[0])
