@@ -75,14 +75,24 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
         from io import BytesIO
         uncropped_img = Image.open(BytesIO(img_data))
 
-        if suffix == ".1":
-            #left half of a spread
-            width, height = uncropped_img.size
-            uncropped_img = uncropped_img.crop((int(0/100.0*width), int(0/100.0*height), width-int(50/100.0*width), height-int(0/100.0*height)))
-        if suffix == ".2":
-            #right half of a spread
-            width, height = uncropped_img.size
-            uncropped_img = uncropped_img.crop((int(50/100.0*width), int(0/100.0*height), width-int(0/100.0*width), height-int(0/100.0*height)))
+        if IS_MANGA:
+            if suffix == ".1":
+                #right half of a spread first because manga
+                width, height = uncropped_img.size
+                uncropped_img = uncropped_img.crop((int(50/100.0*width), int(0/100.0*height), width-int(0/100.0*width), height-int(0/100.0*height)))
+            if suffix == ".2":
+                #left half of a spread next because manga
+                width, height = uncropped_img.size
+                uncropped_img = uncropped_img.crop((int(0/100.0*width), int(0/100.0*height), width-int(50/100.0*width), height-int(0/100.0*height)))
+        else:
+            if suffix == ".1":
+                #left half of a spread
+                width, height = uncropped_img.size
+                uncropped_img = uncropped_img.crop((int(0/100.0*width), int(0/100.0*height), width-int(50/100.0*width), height-int(0/100.0*height)))
+            if suffix == ".2":
+                #right half of a spread
+                width, height = uncropped_img.size
+                uncropped_img = uncropped_img.crop((int(50/100.0*width), int(0/100.0*height), width-int(0/100.0*width), height-int(0/100.0*height)))
 
         if SKIP_ON:
             if str(page_num) in SKIP_PAGES: 
@@ -219,6 +229,14 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
             should_this_split = False
 
         if should_this_split:
+            thumbnail_scale = 1.0*THUMBNAIL_WIDTH/width
+            thumbnail_height = int(thumbnail_scale*height)
+            img_thumbnail = 0
+            if THUMBNAIL_WIDTH > 0:
+                img_thumbnail = img.resize((THUMBNAIL_WIDTH,thumbnail_height), Image.Resampling.LANCZOS).rotate(-90, expand=True).convert("LA")
+                draw = ImageDraw.Draw(img_thumbnail)
+                draw.rectangle((0,0,thumbnail_height,THUMBNAIL_WIDTH), outline=PADDING_COLOR, width=5)
+
             if INCLUDE_OVERVIEWS or SIDEWAYS_OVERVIEWS or SELECT_OVERVIEWS:
                 if SELECT_OVERVIEWS and (str(page_num) not in SELECT_OV_PAGES):
                     pass
@@ -251,6 +269,9 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
 
                 number_of_v_segments = DESIRED_V_OVERLAP_SEGMENTS - 1 
                 letter_keys = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"]
+                letter_keys_hsplit = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"]
+                if IS_MANGA:
+                    letter_keys_hsplit.reverse()
 
                 # width_proportion = width / 800
                 overlapping_height = 480 / established_scale // 1
@@ -277,12 +298,41 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                         segment = img.crop((shiftover_to_overlap*h, shiftdown_to_overlap*v, width-(shiftover_to_overlap*(number_of_h_segments-h-1)), height-(shiftdown_to_overlap*(number_of_v_segments-v-1))))
                         segment_rotated = segment.rotate(-90, expand=True)
                         if number_of_h_segments > 1:
-                            output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[v]}_{letter_keys[h]}.png"
+                            output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[v]}_{letter_keys_hsplit[h]}.png"
                         else:
                             output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[v]}.png"
-                        size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR)
+                        if THUMBNAIL_WIDTH > 0:
+                            if THUMBNAIL_HIGHLIGHT_ACTIVE:
+                                highlight_opacity = 96
+                                thumbnail_overlay = Image.new('LA', img_thumbnail.size)
+                                draw_thumb_overlay = ImageDraw.Draw(thumbnail_overlay)
+                                thumb_region_right = int(thumbnail_height - shiftdown_to_overlap*v*thumbnail_scale)
+                                thumb_region_top = int(shiftover_to_overlap*h*thumbnail_scale)
+                                thumb_region_left = int(thumbnail_height - shiftdown_to_overlap*v*thumbnail_scale - overlapping_height*thumbnail_scale)
+                                thumb_region_bottom = int(THUMBNAIL_WIDTH-(shiftover_to_overlap*(number_of_h_segments-h-1))*thumbnail_scale)
+                                draw_thumb_overlay.rectangle((thumb_region_left,thumb_region_top,thumb_region_right,thumb_region_bottom), fill=(255,highlight_opacity), outline=(PADDING_COLOR,255), width=3)
+                                img_temp_thumbnail = Image.alpha_composite(img_thumbnail, thumbnail_overlay).convert("L")
+                                size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR, thumbnail=img_temp_thumbnail)    
+                            else:
+                                size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR, thumbnail=img_thumbnail)
+                        else:
+                            size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR)
                         h += 1
                     v += 1
+
+                # v = 0
+                # while v < number_of_v_segments:
+                #     h = 0
+                #     while h < number_of_h_segments:
+                #         segment = img.crop((shiftover_to_overlap*h, shiftdown_to_overlap*v, width-(shiftover_to_overlap*(number_of_h_segments-h-1)), height-(shiftdown_to_overlap*(number_of_v_segments-v-1))))
+                #         segment_rotated = segment.rotate(-90, expand=True)
+                #         if number_of_h_segments > 1:
+                #             output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[v]}_{letter_keys[h]}.png"
+                #         else:
+                #             output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[v]}.png"
+                #         size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR, thumbnail=img_thumbnail)
+                #         h += 1
+                #     v += 1
 
 
                 # # Make overlapping vertical column of full-width segments that fill screen.
@@ -320,14 +370,36 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                 top_half = img.crop((0, 0, width, half_height))
                 top_rotated = top_half.rotate(-90, expand=True)
                 output_top = output_path_base.parent / f"{page_num:04d}{suffix}_2_a.png"
-                size = save_with_padding(top_rotated, output_top, padcolor=PADDING_COLOR)
+                if THUMBNAIL_WIDTH > 0:
+                    if THUMBNAIL_HIGHLIGHT_ACTIVE:
+                        highlight_opacity = 96
+                        thumbnail_overlay = Image.new('LA', img_thumbnail.size)
+                        draw_thumb_overlay = ImageDraw.Draw(thumbnail_overlay)
+                        draw_thumb_overlay.rectangle((thumbnail_height//2,0,thumbnail_height,THUMBNAIL_WIDTH), fill=(255,highlight_opacity), outline=(PADDING_COLOR,255), width=3)
+                        img_temp_thumbnail = Image.alpha_composite(img_thumbnail, thumbnail_overlay).convert("L")
+                        size = save_with_padding(top_rotated, output_top, padcolor=PADDING_COLOR, thumbnail=img_temp_thumbnail)
+                    else:
+                        size = save_with_padding(top_rotated, output_top, padcolor=PADDING_COLOR, thumbnail=img_thumbnail)
+                else:
+                    size = save_with_padding(top_rotated, output_top, padcolor=PADDING_COLOR)
                 total_size += size
                 
                 # Process bottom half
                 bottom_half = img.crop((0, half_height, width, height))
                 bottom_rotated = bottom_half.rotate(-90, expand=True)
                 output_bottom = output_path_base.parent / f"{page_num:04d}{suffix}_2_b.png"
-                size = save_with_padding(bottom_rotated, output_bottom, padcolor=PADDING_COLOR)
+                if THUMBNAIL_WIDTH > 0:
+                    if THUMBNAIL_HIGHLIGHT_ACTIVE:
+                        highlight_opacity = 96
+                        thumbnail_overlay = Image.new('LA', img_thumbnail.size)
+                        draw_thumb_overlay = ImageDraw.Draw(thumbnail_overlay)
+                        draw_thumb_overlay.rectangle((0,0,thumbnail_height//2,THUMBNAIL_WIDTH), fill=(255,highlight_opacity), outline=(PADDING_COLOR,255), width=3)
+                        img_temp_thumbnail = Image.alpha_composite(img_thumbnail, thumbnail_overlay).convert("L")
+                        size = save_with_padding(bottom_rotated, output_bottom, padcolor=PADDING_COLOR, thumbnail=img_temp_thumbnail)
+                    else:
+                        size = save_with_padding(bottom_rotated, output_bottom, padcolor=PADDING_COLOR, thumbnail=img_thumbnail)
+                else:
+                    size = save_with_padding(bottom_rotated, output_bottom, padcolor=PADDING_COLOR)
                 total_size += size
         
         elif width >= height or str(page_num) in SPLIT_SPREADS_PAGES:
@@ -354,8 +426,7 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
         print(f"    Warning: Could not optimize image: {e}")
         return 0
 
-
-def save_with_padding(img, output_path, *, padcolor=255):
+def save_with_padding(img, output_path, *, padcolor=255, thumbnail=False):
     """
     Resize image to fit within 480x800 and add white padding
     Optionally apply dithering for better B&W conversion
@@ -382,7 +453,22 @@ def save_with_padding(img, output_path, *, padcolor=255):
     x = (TARGET_WIDTH - new_width) // 2
     y = (TARGET_HEIGHT - new_height) // 2
     
+    if thumbnail:
+        # Move image to the right
+        y = (TARGET_HEIGHT - new_height)
+
     result.paste(img_resized, (x, y))
+
+    if thumbnail:
+        # thumb_width, thumb_height = thumbnail.size
+        # thumb_x = 0
+        if USE_DITHERING:
+            # Convert to 1-bit with Floyd-Steinberg dithering
+            thumbnail = thumbnail.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+            # Convert back to grayscale mode so we can paste on white background
+            thumbnail = thumbnail.convert('L')
+        result.paste(thumbnail, (0,0))
+
     result.save(output_path, 'PNG', optimize=True)
     
     return output_path.stat().st_size
@@ -509,6 +595,10 @@ def main():
         print("                threshold conversion (sharper for clean line art).")
         print("\n  --overlap     Split into 3 overlapping screen-filling pieces instead")
         print("                of 2 non-overlapping pieces that may leave margins.")
+        print("\n  --thumbnail <#>   Creates a thumbnail that is # pixels wide on the left")
+        print("                side. If using --overlap, combine with --hsplit-max-width")
+        print("\n  --no-thumb-highlight   Do not highlight the position of the currently")
+        print("                active split portion on the thumbnail (if present).")
         print("\n  --split-spreads all or <pagenum> or <pagenum,pagenum,pagenum...>")
         print("                Splits wide pages in half, and then split each of the")
         print("                halves as if they were normal pages. Useful if the")
@@ -565,6 +655,8 @@ def main():
         print("                overlap of segments, it will automatically add more.")           
         print("\n  --vsplit-min-overlap <float>   minimum vertical overlap between segments.")
         print("                in percent. Default is 5 percent.")  
+        print("\n  --manga       Horizontal splits and --split-spreads will be ordered")
+        print("                right-to-left instead of left-to-right in the output.")  
         print("\n  --sample-set <pagenum> or <pagenum,pagenum,pagenum...>  Build a")
         print("                spread of contrast and margin samples for a page or")
         print("                list of pages. Useful for evaluating what settings")
@@ -595,6 +687,10 @@ def main():
         print("                     # A sideways overview will be used instead of splits")
         print("                     # for page 17, and a sideways overview will come")
         print("                     # before the splits for pages 19 and 24.")
+        print("  cbz2xtc --overlap --vsplit-target 7 --thumbnail 120 --hsplit-max-width 700")
+        print("                     # Break up the page so it scrolls a little with")
+        print("                     # each advance, showing the currently viewed segment")
+        print("                     # as a highlight on a small thumbnail.")
         print("  cbz2xtc --overlap --hsplit-count 2 --hsplit-overlap 25 --hsplit-max-width 600")
         print("                     # split the page horizontally as well as vertically,")
         print("                     # with a slight overlap, only using 600px screen width on")
@@ -605,6 +701,8 @@ def main():
     # Parse arguments
     global USE_DITHERING
     global OVERLAP
+    global THUMBNAIL_WIDTH
+    global THUMBNAIL_HIGHLIGHT_ACTIVE
     global SPLIT_SPREADS
     global SPLIT_SPREADS_PAGES
     global SPLIT_ALL
@@ -629,6 +727,7 @@ def main():
     global MINIMUM_V_OVERLAP_PERCENT
     global SET_H_OVERLAP_PERCENT
     global MAX_SPLIT_WIDTH
+    global IS_MANGA
     global SAMPLE_SET
     global SAMPLE_PAGES
     global PADDING_COLOR
@@ -637,6 +736,7 @@ def main():
     clean_temp = "--clean" in sys.argv
     USE_DITHERING = "--no-dither" not in sys.argv  # Inverted logic
     OVERLAP = "--overlap" in sys.argv
+    THUMBNAIL_HIGHLIGHT_ACTIVE = "--no-thumb-highlight" not in sys.argv
     SPLIT_SPREADS = "--split-spreads" in sys.argv
     SPLIT_ALL = "--split-all" in sys.argv
     SKIP_ON = "--skip" in sys.argv
@@ -647,6 +747,8 @@ def main():
     INCLUDE_OVERVIEWS = "--include-overviews" in sys.argv
     SIDEWAYS_OVERVIEWS = "--sideways-overviews" in sys.argv
     SELECT_OVERVIEWS = "--select-overviews" in sys.argv
+    IS_MANGA = "--manga" in sys.argv
+    THUMBNAIL_WIDTH = 0
     START_PAGE = False
     STOP_PAGE = False
     SAMPLE_SET = "--sample-set" in sys.argv
@@ -655,8 +757,12 @@ def main():
     ONLY_PAGES = []
     DONT_SPLIT_PAGES = []
     SELECT_OV_PAGES = []
-    DESIRED_V_OVERLAP_SEGMENTS = 3
-    SET_H_OVERLAP_SEGMENTS = 1
+    DESIRED_V_OVERLAP_SEGMENTS = 0
+    SET_H_OVERLAP_SEGMENTS = 0
+    if OVERLAP or "--vsplit-target" in sys.argv or "-hsplit-count" in sys.argv:
+        # OVERLAP either explicitly or implicitly asked for, and we need real defaults.
+        DESIRED_V_OVERLAP_SEGMENTS = 3
+        SET_H_OVERLAP_SEGMENTS = 1
     MINIMUM_V_OVERLAP_PERCENT = 5
     SET_H_OVERLAP_PERCENT = 70
     MAX_SPLIT_WIDTH = 800
@@ -671,7 +777,12 @@ def main():
     args = []
     while i < len(sys.argv):
         arg = sys.argv[i]
-        if arg == "--split-spreads":
+        if arg == "--thumbnail":
+            THUMBNAIL_WIDTH = int(sys.argv[i+1])
+            print("Will show thumbnail on splits of width:", THUMBNAIL_WIDTH)
+            # skip the next arg, as it's thumbnail_width pixels parameter.
+            i += 1
+        elif arg == "--split-spreads":
             SPLIT_SPREADS_PAGES = sys.argv[i+1].split(',')
             print("Will split spread pages:", SPLIT_SPREADS_PAGES)
             # skip the next arg, as it's split spread pages parameter.
