@@ -60,7 +60,7 @@ def find_png2xtc():
     return None
 
 
-def optimize_image(img_data, output_path_base, page_num):
+def optimize_image(img_data, output_path_base, page_num, suffix=""):
     """
     Optimize image for XTEink X4:
     - crop off image margins (if active)
@@ -74,11 +74,28 @@ def optimize_image(img_data, output_path_base, page_num):
     try:
         from io import BytesIO
         uncropped_img = Image.open(BytesIO(img_data))
-        
+
+        if suffix == ".1":
+            #left half of a spread
+            width, height = uncropped_img.size
+            uncropped_img = uncropped_img.crop((int(0/100.0*width), int(0/100.0*height), width-int(50/100.0*width), height-int(0/100.0*height)))
+        if suffix == ".2":
+            #right half of a spread
+            width, height = uncropped_img.size
+            uncropped_img = uncropped_img.crop((int(50/100.0*width), int(0/100.0*height), width-int(0/100.0*width), height-int(0/100.0*height)))
+
         if SKIP_ON:
             if str(page_num) in SKIP_PAGES: 
                 print("skipping page:",page_num)
                 return 0
+
+        if START_PAGE and page_num < START_PAGE:
+            # we haven't reached the start page yet
+            return 0
+
+        if STOP_PAGE and page_num > STOP_PAGE:
+            # we've passed the stop page.
+            return 0
 
         if ONLY_ON:
             if str(page_num) not in ONLY_PAGES: 
@@ -108,11 +125,11 @@ def optimize_image(img_data, output_path_base, page_num):
                     draw.rounded_rectangle(box_position, radius=60, fill=box_color, outline=text_color, width=6, corners=(False,True,False,True))
                     draw.text(text_position, f"Contrast {contrast_set}", fill=text_color, font=font)
                     output_page = output_path_base.parent / f"{page_num:04d}_0_contrast{contrast_set}.png"
-                    save_with_padding(page_view, output_page)
+                    save_with_padding(page_view, output_page, padcolor=PADDING_COLOR)
                     middle_third = page_view.crop((0, shiftdown_to_overlap, width, height - shiftdown_to_overlap))
                     middle_rotated = middle_third.rotate(-90, expand=True)
                     output_middle = output_path_base.parent / f"{page_num:04d}_3_b_contrast{contrast_set}.png"
-                    save_with_padding(middle_rotated, output_middle)
+                    save_with_padding(middle_rotated, output_middle, padcolor=PADDING_COLOR)
                     contrast_set += 1
                 crop_set = 0.0
                 contrast3img = ImageOps.autocontrast(uncropped_img, cutoff=(9,30), preserve_tone=True)
@@ -163,6 +180,12 @@ def optimize_image(img_data, output_path_base, page_num):
         if MARGIN:
             if MARGIN_VALUE == "0":
                 pass #we don't need to do margins at all.
+            elif MARGIN_VALUE.lower() == "auto":
+                # trim white space from all four sides.
+                invert_img=ImageOps.invert(uncropped_img) #invert image
+                invert_img=ImageOps.autocontrast(invert_img,cutoff=(59,40))
+                image_box_coords = invert_img.getbbox() # bounding rect around anything not true black.
+                img = uncropped_img.crop(image_box_coords)
             elif len(MARGIN_VALUE.split(',')) > 1:
                 marginlist = MARGIN_VALUE.split(',')
                 marginlist.append("0")
@@ -180,71 +203,150 @@ def optimize_image(img_data, output_path_base, page_num):
         half_height = height // 2
         total_size = 0
 
-        if str(page_num) not in DONT_SPLIT_PAGES and (SPLIT_ALL or width < height):
+        should_this_split = width < height  #we split most pages that are vertical.
+        if str(page_num) in SPLIT_SPREADS_PAGES:
+            if suffix == "":  
+                # we haven't recursed, this is top level.
+                should_this_split = False  #we're not splitting this vertically, we're halving it, then the halves will be split recursively.
+            else:
+                # we have recursed.
+                should_this_split = True  #we can't recurse again, it's been halved, it must be split.
+        if SPLIT_ALL:  
+            #well, that's easy, we split!
+            should_this_split = True
+        if suffix == "" and str(page_num) in DONT_SPLIT_PAGES:  
+            #also easy, we don't split. Overrides everything. (excepting recursion)
+            should_this_split = False
 
-            if INCLUDE_OVERVIEWS or SIDEWAYS_OVERVIEWS:
-                # Process overview page
-                page_view = uncropped_img;
-                if not SIDEWAYS_OVERVIEWS:
-                    page_view = uncropped_img.rotate(-90, expand=True)
-                output_page = output_path_base.parent / f"{page_num:04d}_0_overview.png"
-                save_with_padding(page_view, output_page)
+        if should_this_split:
+            if INCLUDE_OVERVIEWS or SIDEWAYS_OVERVIEWS or SELECT_OVERVIEWS:
+                if SELECT_OVERVIEWS and (str(page_num) not in SELECT_OV_PAGES):
+                    pass
+                    # we're only doing overviews for some pages, and this one isn't one.
+                else:
+                    # Process overview page
+                    page_view = uncropped_img;
+                    if not SIDEWAYS_OVERVIEWS:
+                        page_view = uncropped_img.rotate(-90, expand=True)
+                    output_page = output_path_base.parent / f"{page_num:04d}{suffix}_0_overview.png"
+                    save_with_padding(page_view, output_page, padcolor=PADDING_COLOR)
 
-            if OVERLAP:
-                width_proportion = width / 800
-                overlapping_third_height = 480 * width_proportion // 1
-                shiftdown_to_overlap = overlapping_third_height - (overlapping_third_height * 3 - height) // 2
+            if OVERLAP or DESIRED_V_OVERLAP_SEGMENTS or SET_H_OVERLAP_SEGMENTS:
+                # DESIRED_V_OVERLAP_SEGMENTS = 3
+                # SET_H_OVERLAP_SEGMENTS = 1
+                # MINIMUM_V_OVERLAP_PERCENT = 5
+                # SET_H_OVERLAP_PERCENT = 75
+                # MAX_SPLIT_WIDTH = 80
 
-                # Process top third
-                top_third = img.crop((0, 0, width, overlapping_third_height))
-                top_rotated = top_third.rotate(-90, expand=True)
-                output_top = output_path_base.parent / f"{page_num:04d}_3_a.png"
-                size = save_with_padding(top_rotated, output_top)
-                total_size += size;
+                number_of_h_segments = SET_H_OVERLAP_SEGMENTS
+                total_calculated_width = MAX_SPLIT_WIDTH * number_of_h_segments - int((number_of_h_segments - 1) * (MAX_SPLIT_WIDTH * 0.01 * SET_H_OVERLAP_PERCENT))
+                    # so, 1 = 800. 2 with 33% overlap = 1334, 3 with 33% overlap = 1868px, etc.
+                established_scale = total_calculated_width * 1.0 / width
+                    # so for 2000px wide source, 1= 0.4, 2=0.667, etc. 
 
-                # Process middle third
-                middle_third = img.crop((0, shiftdown_to_overlap, width, height - shiftdown_to_overlap))
-                middle_rotated = middle_third.rotate(-90, expand=True)
-                output_middle = output_path_base.parent / f"{page_num:04d}_3_b.png"
-                size = save_with_padding(middle_rotated, output_middle)
-                total_size += size;
+                overlapping_width = MAX_SPLIT_WIDTH / established_scale // 1
+                shiftover_to_overlap = 0
+                if number_of_h_segments > 1:
+                    shiftover_to_overlap = overlapping_width - (overlapping_width * number_of_h_segments - width) // (number_of_h_segments - 1)
 
-                # Process middle third
-                bottom_third = img.crop((0, shiftdown_to_overlap*2, width, height))
-                bottom_rotated = bottom_third.rotate(-90, expand=True)
-                output_bottom = output_path_base.parent / f"{page_num:04d}_3_c.png"
-                size = save_with_padding(bottom_rotated, output_bottom)
-                total_size += size;
+                number_of_v_segments = DESIRED_V_OVERLAP_SEGMENTS - 1 
+                letter_keys = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"]
+
+                # width_proportion = width / 800
+                overlapping_height = 480 / established_scale // 1
+                shiftdown_to_overlap = 99999
+                while number_of_v_segments < 26 and (shiftdown_to_overlap * 1.0 / overlapping_height) > (1.0 - .01 * MINIMUM_V_OVERLAP_PERCENT):
+                    # iterate until we have a number of segments that cover the page with sufficient overlap.
+                    # the first iteration should fix the 99999 thing and set up our "base" attempt.
+                    number_of_v_segments += 1
+                    shiftdown_to_overlap = 0
+                    if number_of_v_segments > 1:
+                        shiftdown_to_overlap = overlapping_height - (overlapping_height * number_of_v_segments - height) // (number_of_v_segments - 1)
+
+                # # debugging math output
+                # print (f"width:{width}, height:{height}")
+                # print (f"overlapping_width:{overlapping_width}, overlapping_height:{overlapping_height}")
+                # print (f"shiftdown_to_overlap:{shiftdown_to_overlap}, shiftover_to_overlap:{shiftover_to_overlap}")
+                # print (f"established_scale:{established_scale}")
+
+                # Make overlapping segments that fill 800x480 screen.
+                v = 0
+                while v < number_of_v_segments:
+                    h = 0
+                    while h < number_of_h_segments:
+                        segment = img.crop((shiftover_to_overlap*h, shiftdown_to_overlap*v, width-(shiftover_to_overlap*(number_of_h_segments-h-1)), height-(shiftdown_to_overlap*(number_of_v_segments-v-1))))
+                        segment_rotated = segment.rotate(-90, expand=True)
+                        if number_of_h_segments > 1:
+                            output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[v]}_{letter_keys[h]}.png"
+                        else:
+                            output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[v]}.png"
+                        size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR)
+                        h += 1
+                    v += 1
+
+
+                # # Make overlapping vertical column of full-width segments that fill screen.
+                # i = 0
+                # while i < number_of_segments:
+                #     segment = img.crop((0,shiftdown_to_overlap*i, width, height-(shiftdown_to_overlap*(number_of_segments-i-1))))
+                #     segment_rotated = segment.rotate(-90, expand=True)
+                #     output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[i]}.png"
+                #     size = save_with_padding(segment_rotated, output)
+                #     i += 1
+
+                # # Process top third
+                # top_third = img.crop((0, 0, width, overlapping_third_height))
+                # top_rotated = top_third.rotate(-90, expand=True)
+                # output_top = output_path_base.parent / f"{page_num:04d}{suffix}_3_a.png"
+                # size = save_with_padding(top_rotated, output_top)
+                # total_size += size;
+
+                # # Process middle third
+                # middle_third = img.crop((0, shiftdown_to_overlap, width, height - shiftdown_to_overlap))
+                # middle_rotated = middle_third.rotate(-90, expand=True)
+                # output_middle = output_path_base.parent / f"{page_num:04d}{suffix}_3_b.png"
+                # size = save_with_padding(middle_rotated, output_middle)
+                # total_size += size;
+
+                # # Process middle third
+                # bottom_third = img.crop((0, shiftdown_to_overlap*2, width, height))
+                # bottom_rotated = bottom_third.rotate(-90, expand=True)
+                # output_bottom = output_path_base.parent / f"{page_num:04d}{suffix}_3_c.png"
+                # size = save_with_padding(bottom_rotated, output_bottom)
+                # total_size += size;
 
             else:
                 # Process top half
                 top_half = img.crop((0, 0, width, half_height))
                 top_rotated = top_half.rotate(-90, expand=True)
-                output_top = output_path_base.parent / f"{page_num:04d}_2_a.png"
-                size = save_with_padding(top_rotated, output_top)
+                output_top = output_path_base.parent / f"{page_num:04d}{suffix}_2_a.png"
+                size = save_with_padding(top_rotated, output_top, padcolor=PADDING_COLOR)
                 total_size += size
                 
                 # Process bottom half
                 bottom_half = img.crop((0, half_height, width, height))
                 bottom_rotated = bottom_half.rotate(-90, expand=True)
-                output_bottom = output_path_base.parent / f"{page_num:04d}_2_b.png"
-                size = save_with_padding(bottom_rotated, output_bottom)
+                output_bottom = output_path_base.parent / f"{page_num:04d}{suffix}_2_b.png"
+                size = save_with_padding(bottom_rotated, output_bottom, padcolor=PADDING_COLOR)
                 total_size += size
         
-        elif width >= height:
-            # Process wide page
+        elif width >= height or str(page_num) in SPLIT_SPREADS_PAGES:
+            # Process wide page, or specifically split narrow page (rare, but for two-column layouts)
             # top_half = img.crop((0, 0, width, half_height))
             page_rotated = img.rotate(-90, expand=True)
-            output_page = output_path_base.parent / f"{page_num:04d}_0_spread.png"
-            size = save_with_padding(page_rotated, output_page)
+            output_page = output_path_base.parent / f"{page_num:04d}{suffix}_0_spread.png"
+            size = save_with_padding(page_rotated, output_page, padcolor=PADDING_COLOR)
+            if SPLIT_SPREADS and (SPLIT_SPREADS_PAGES[0] == "all" or str(page_num) in SPLIT_SPREADS_PAGES):
+                splitLeft = optimize_image(img_data, output_path_base, page_num, suffix=suffix+".1")
+                splitRight = optimize_image(img_data, output_path_base, page_num, suffix=suffix+".2")
             total_size += size
         else: 
             # This is a dont-split page, treat like overview page
             page_view = uncropped_img;
             if not SIDEWAYS_OVERVIEWS:
                 page_view = uncropped_img.rotate(-90, expand=True)
-            output_page = output_path_base.parent / f"{page_num:04d}_0_overview.png"
-            save_with_padding(page_view, output_page)
+            output_page = output_path_base.parent / f"{page_num:04d}{suffix}_0_overview.png"
+            save_with_padding(page_view, output_page, padcolor=PADDING_COLOR)
 
         return total_size
         
@@ -299,9 +401,10 @@ def extract_cbz_to_png(cbz_path, temp_dir):
         with zipfile.ZipFile(cbz_path, 'r') as zip_ref:
             file_list = zip_ref.namelist()
             image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
-            image_files = [f for f in file_list if f.lower().endswith(image_extensions)]
+            os_metadata_exclusions = ('__macos') # .cbzs made on Macs sometimes have mac-specific metadata in a __macos directory.
+            image_files = [f for f in file_list if f.lower().endswith(image_extensions) and not f.lower().startswith(os_metadata_exclusions)]
             image_files.sort()
-            
+
             if not image_files:
                 print(f"  ✗ No images found in {cbz_name}")
                 return None
@@ -406,6 +509,10 @@ def main():
         print("                threshold conversion (sharper for clean line art).")
         print("\n  --overlap     Split into 3 overlapping screen-filling pieces instead")
         print("                of 2 non-overlapping pieces that may leave margins.")
+        print("\n  --split-spreads all or <pagenum> or <pagenum,pagenum,pagenum...>")
+        print("                Splits wide pages in half, and then split each of the")
+        print("                halves as if they were normal pages. Useful if the")
+        print("                wide pages are double-page spreads with text.")
         print("\n  --split-all   Splits ALL pages into pieces, even if those pages")
         print("                are wider than they are tall.")
         print("\n  --skip <pagenum> or <pagenum,pagenum,pagenum...>   skips page")
@@ -425,16 +532,39 @@ def main():
         print("                in general, text will be more readable by increasing")
         print("                dark contrast, and images will gain clarity by")
         print("                increasing light contrast.")
-        print("\n  --margin <integer> or <left,top,right,bottom>   crops off page")
-        print("                margins by a percentage of the width or height.")
+        print("\n  --margin auto or <float> or <left,top,right,bottom>   crops off")
+        print("                page margins by a percentage of the width or height.")
         print("                Use a single number to crop from all sides equally, or")
-        print("                specify the cropping for each side in LTRB order")
+        print("                specify the cropping for each side in LTRB order.")
+        print("                '--margin auto' trims white space from all 4 sides.")
         print("                (margin crop is not applied to overview pages.)")
         print("\n  --include-overviews   Show an overview of each page before the")
         print("                split pieces.")
         print("\n  --sideways-overviews   Show a rotated overview of each page before")
         print("                the split pieces. (better quality, but will require)")
         print("                reader to turn their device sideways)")
+        print("\n  --select-overviews <pagenum> or <pagenum,pagenum,pagenum...>  Add")
+        print("                overview pages for only the specified pages instead of")
+        print("                for all pages. Will use vertical overviews if")
+        print("                --sideways-overviews is unset. (--dont-split's listed")
+        print("                pagenums will still automatically get overviews and")
+        print("                don't need to be listed here again.)")
+        print("\n  --start <pagenum>   Don't process pages before this page.")
+        print("\n  --stop <pagenum>    Don't process pages after this page.")
+        print("\n  --pad-black   Pad things that don't fill screen with black instead")
+        print("\n  --hsplit-count <#>   Split page horizontally into # segments.")
+        print("\n  --hsplit-overlap <float>   horizontal overlap between segments in")
+        print("                percent. Default is 70 percent. Lowering this value will")  
+        print("                almost always result in automatically splitting the page")  
+        print("                vertically into more than 3 segments.")
+        print("\n  --hsplit-max-width <#>   limit the width of horizontal segments")
+        print("                to less than full screen. (allows for lower amounts of")
+        print("                overlap without requiring extra vertical segmentation.)")
+        print("\n  --vsplit-target <#>   try to split page vertically into # segments.")
+        print("                if this would result it missing data or insufficient")
+        print("                overlap of segments, it will automatically add more.")           
+        print("\n  --vsplit-min-overlap <float>   minimum vertical overlap between segments.")
+        print("                in percent. Default is 5 percent.")  
         print("\n  --sample-set <pagenum> or <pagenum,pagenum,pagenum...>  Build a")
         print("                spread of contrast and margin samples for a page or")
         print("                list of pages. Useful for evaluating what settings")
@@ -458,15 +588,25 @@ def main():
         print("  cbz2xtc                           # Basic conversion (with dithering)")
         print("  cbz2xtc --clean                   # With cleanup")
         print("  cbz2xtc --no-dither               # Without dithering")
-        print("  cbz2xtc --contrast 3,5 --margin 5,3,5,3   # good trial")
-        print("                     # settings for a mainstream comic.")
+        print("  cbz2xtc --contrast 3,5 --margin 5,3.5,5,3.5 --split-spreads all")
+        print("                     # good trial settings for a mainstream comic.")
         print("  cbz2xtc --dont-split 1            # show cover as single image")
+        print("  cbz2xtc --sideways-overviews --dont-split 17 --select-overviews 19,24")
+        print("                     # A sideways overview will be used instead of splits")
+        print("                     # for page 17, and a sideways overview will come")
+        print("                     # before the splits for pages 19 and 24.")
+        print("  cbz2xtc --overlap --hsplit-count 2 --hsplit-overlap 25 --hsplit-max-width 600")
+        print("                     # split the page horizontally as well as vertically,")
+        print("                     # with a slight overlap, only using 600px screen width on")
+        print("                     # target device for the segmented pieces.")
         print("  cbz2xtc D:\\manga --clean          # Specific folder + cleanup")
         return 0
     
     # Parse arguments
     global USE_DITHERING
     global OVERLAP
+    global SPLIT_SPREADS
+    global SPLIT_SPREADS_PAGES
     global SPLIT_ALL
     global SKIP_ON
     global SKIP_PAGES
@@ -480,35 +620,66 @@ def main():
     global MARGIN_VALUE
     global INCLUDE_OVERVIEWS
     global SIDEWAYS_OVERVIEWS
+    global SELECT_OVERVIEWS
+    global SELECT_OV_PAGES
+    global START_PAGE
+    global STOP_PAGE
+    global DESIRED_V_OVERLAP_SEGMENTS
+    global SET_H_OVERLAP_SEGMENTS
+    global MINIMUM_V_OVERLAP_PERCENT
+    global SET_H_OVERLAP_PERCENT
+    global MAX_SPLIT_WIDTH
     global SAMPLE_SET
     global SAMPLE_PAGES
+    global PADDING_COLOR
 
 
     clean_temp = "--clean" in sys.argv
     USE_DITHERING = "--no-dither" not in sys.argv  # Inverted logic
     OVERLAP = "--overlap" in sys.argv
+    SPLIT_SPREADS = "--split-spreads" in sys.argv
     SPLIT_ALL = "--split-all" in sys.argv
     SKIP_ON = "--skip" in sys.argv
     ONLY_ON = "--only" in sys.argv
     DONT_SPLIT = "--dont-split" in sys.argv
     CONTRAST_BOOST = "--contrast-boost" in sys.argv
-    MARGIN = "--margin" in sys.argv
+    MARGIN = "--margin" in sys.argv or "--margins" in sys.argv # being nice since easy mistake.
     INCLUDE_OVERVIEWS = "--include-overviews" in sys.argv
     SIDEWAYS_OVERVIEWS = "--sideways-overviews" in sys.argv
+    SELECT_OVERVIEWS = "--select-overviews" in sys.argv
+    START_PAGE = False
+    STOP_PAGE = False
     SAMPLE_SET = "--sample-set" in sys.argv
+    SPLIT_SPREADS_PAGES = []
     SKIP_PAGES = []
     ONLY_PAGES = []
     DONT_SPLIT_PAGES = []
+    SELECT_OV_PAGES = []
+    DESIRED_V_OVERLAP_SEGMENTS = 3
+    SET_H_OVERLAP_SEGMENTS = 1
+    MINIMUM_V_OVERLAP_PERCENT = 5
+    SET_H_OVERLAP_PERCENT = 70
+    MAX_SPLIT_WIDTH = 800
+    PADDING_COLOR = 255
+
+    if "--pad-black" in sys.argv:
+        PADDING_COLOR = 0
+
     # args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
     
     i = 1
     args = []
     while i < len(sys.argv):
         arg = sys.argv[i]
-        if arg == "--skip":
+        if arg == "--split-spreads":
+            SPLIT_SPREADS_PAGES = sys.argv[i+1].split(',')
+            print("Will split spread pages:", SPLIT_SPREADS_PAGES)
+            # skip the next arg, as it's split spread pages parameter.
+            i += 1
+        elif arg == "--skip":
             SKIP_PAGES = sys.argv[i+1].split(',')
             print("Will skip pages:", SKIP_PAGES)
-            # skip the next arg, as it's sample pages parameter.
+            # skip the next arg, as it's skip pages parameter.
             i += 1
         elif arg == "--only":
             ONLY_PAGES = sys.argv[i+1].split(',')
@@ -522,16 +693,50 @@ def main():
             CONTRAST_VALUE = sys.argv[i+1]
             print("Contrast setting:", CONTRAST_VALUE)
             i += 1 #skip next arg
-        elif arg == "--margin":
+        elif arg == "--margin" or arg== "--margins":
             MARGIN_VALUE = sys.argv[i+1]
             print("Margin setting:", MARGIN_VALUE)
+            i += 1 #skip next arg
+        elif arg == "--select-overviews":
+            SELECT_OV_PAGES = sys.argv[i+1].split(',')
+            print("Overviews will be added for pages:", SELECT_OV_PAGES)
+            i += 1 #skip next arg
+        elif arg == "--start":
+            START_PAGE = int(sys.argv[i+1])
+            print("Generation will start at page:", START_PAGE)
+            i += 1 #skip next arg
+        elif arg == "--stop":
+            STOP_PAGE = int(sys.argv[i+1])
+            print("Generation will stop after page:", STOP_PAGE)
+            i += 1 #skip next arg
+        elif arg == "--vsplit-target":
+            OVERLAP = True  # even if not explicitly set.
+            DESIRED_V_OVERLAP_SEGMENTS = int(sys.argv[i+1])
+            print("will try to verticallly split into ", DESIRED_V_OVERLAP_SEGMENTS, "segments")
+            i += 1 #skip next arg
+        elif arg == "--vsplit-min-overlap":
+            MINIMUM_V_OVERLAP_PERCENT = float(sys.argv[i+1])
+            print("Minimum percentage overlap for vertical splits:", MINIMUM_V_OVERLAP_PERCENT)
+            i += 1 #skip next arg
+        elif arg == "--hsplit-count":
+            OVERLAP = True    # even if not explicitly set.
+            SET_H_OVERLAP_SEGMENTS = int(sys.argv[i+1])
+            print("will horizontally split into ", SET_H_OVERLAP_SEGMENTS, "segments")
+            i += 1 #skip next arg
+        elif arg == "--hsplit-overlap":
+            SET_H_OVERLAP_PERCENT = float(sys.argv[i+1])
+            print("will do this percentage overlap for horizontal splits:", SET_H_OVERLAP_PERCENT)
+            i += 1 #skip next arg
+        elif arg == "--hsplit-max-width":
+            MAX_SPLIT_WIDTH = int(sys.argv[i+1])
+            print("max width in pixels for horizontal splits:", MAX_SPLIT_WIDTH)
             i += 1 #skip next arg
         elif arg == "--sample-set":
             SAMPLE_PAGES = sys.argv[i+1].split(',')
             print("Sample Mode for pages:", SAMPLE_PAGES)
             i += 1 #skip next arg
         elif arg.startswith("--"):
-            pass # do nothing, it's boolean and handled above.
+            pass # do nothing, it's presumably boolean and handled above.
         else:
             args.append(arg) # it's supposed to be a path.
         i += 1
