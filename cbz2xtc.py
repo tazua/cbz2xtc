@@ -28,6 +28,9 @@ TARGET_HEIGHT = 800
 # Global flag for dithering (default True)
 USE_DITHERING = True
 
+# Pillow rotate angle for split panels and rotated overviews (-90=clockwise, 90=CCW)
+ROTATE_ANGLE = -90
+
 
 def find_png2xtc():
     """
@@ -127,7 +130,7 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                     output_page = output_path_base.parent / f"{page_num:04d}_0_contrast{contrast_set}.png"
                     save_with_padding(page_view, output_page, padcolor=PADDING_COLOR)
                     middle_third = page_view.crop((0, shiftdown_to_overlap, width, height - shiftdown_to_overlap))
-                    middle_rotated = middle_third.rotate(-90, expand=True)
+                    middle_rotated = middle_third.rotate(ROTATE_ANGLE, expand=True)
                     output_middle = output_path_base.parent / f"{page_num:04d}_3_b_contrast{contrast_set}.png"
                     save_with_padding(middle_rotated, output_middle, padcolor=PADDING_COLOR)
                     contrast_set += 1
@@ -227,7 +230,7 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                     # Process overview page
                     page_view = uncropped_img;
                     if not SIDEWAYS_OVERVIEWS:
-                        page_view = uncropped_img.rotate(-90, expand=True)
+                        page_view = uncropped_img.rotate(ROTATE_ANGLE, expand=True)
                     output_page = output_path_base.parent / f"{page_num:04d}{suffix}_0_overview.png"
                     save_with_padding(page_view, output_page, padcolor=PADDING_COLOR)
 
@@ -275,7 +278,7 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                     h = 0
                     while h < number_of_h_segments:
                         segment = img.crop((shiftover_to_overlap*h, shiftdown_to_overlap*v, width-(shiftover_to_overlap*(number_of_h_segments-h-1)), height-(shiftdown_to_overlap*(number_of_v_segments-v-1))))
-                        segment_rotated = segment.rotate(-90, expand=True)
+                        segment_rotated = segment.rotate(ROTATE_ANGLE, expand=True)
                         if number_of_h_segments > 1:
                             output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[v]}_{letter_keys[h]}.png"
                         else:
@@ -318,14 +321,14 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
             else:
                 # Process top half
                 top_half = img.crop((0, 0, width, half_height))
-                top_rotated = top_half.rotate(-90, expand=True)
+                top_rotated = top_half.rotate(ROTATE_ANGLE, expand=True)
                 output_top = output_path_base.parent / f"{page_num:04d}{suffix}_2_a.png"
                 size = save_with_padding(top_rotated, output_top, padcolor=PADDING_COLOR)
                 total_size += size
                 
                 # Process bottom half
                 bottom_half = img.crop((0, half_height, width, height))
-                bottom_rotated = bottom_half.rotate(-90, expand=True)
+                bottom_rotated = bottom_half.rotate(ROTATE_ANGLE, expand=True)
                 output_bottom = output_path_base.parent / f"{page_num:04d}{suffix}_2_b.png"
                 size = save_with_padding(bottom_rotated, output_bottom, padcolor=PADDING_COLOR)
                 total_size += size
@@ -333,7 +336,7 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
         elif width >= height or str(page_num) in SPLIT_SPREADS_PAGES:
             # Process wide page, or specifically split narrow page (rare, but for two-column layouts)
             # top_half = img.crop((0, 0, width, half_height))
-            page_rotated = img.rotate(-90, expand=True)
+            page_rotated = img.rotate(ROTATE_ANGLE, expand=True)
             output_page = output_path_base.parent / f"{page_num:04d}{suffix}_0_spread.png"
             size = save_with_padding(page_rotated, output_page, padcolor=PADDING_COLOR)
             if SPLIT_SPREADS and (SPLIT_SPREADS_PAGES[0] == "all" or str(page_num) in SPLIT_SPREADS_PAGES):
@@ -344,7 +347,7 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
             # This is a dont-split page, treat like overview page
             page_view = uncropped_img;
             if not SIDEWAYS_OVERVIEWS:
-                page_view = uncropped_img.rotate(-90, expand=True)
+                page_view = uncropped_img.rotate(ROTATE_ANGLE, expand=True)
             output_page = output_path_base.parent / f"{page_num:04d}{suffix}_0_overview.png"
             save_with_padding(page_view, output_page, padcolor=PADDING_COLOR)
 
@@ -509,6 +512,8 @@ def main():
         print("                threshold conversion (sharper for clean line art).")
         print("\n  --overlap     Split into 3 overlapping screen-filling pieces instead")
         print("                of 2 non-overlapping pieces that may leave margins.")
+        print("\n  --rotate-ccw  Rotate split panels (and rotated overviews/spreads)")
+        print("                90° counter-clockwise instead of the default clockwise.")
         print("\n  --split-spreads all or <pagenum> or <pagenum,pagenum,pagenum...>")
         print("                Splits wide pages in half, and then split each of the")
         print("                halves as if they were normal pages. Useful if the")
@@ -632,10 +637,12 @@ def main():
     global SAMPLE_SET
     global SAMPLE_PAGES
     global PADDING_COLOR
+    global ROTATE_ANGLE
 
 
     clean_temp = "--clean" in sys.argv
     USE_DITHERING = "--no-dither" not in sys.argv  # Inverted logic
+    ROTATE_ANGLE = 90 if "--rotate-ccw" in sys.argv else -90
     OVERLAP = "--overlap" in sys.argv
     SPLIT_SPREADS = "--split-spreads" in sys.argv
     SPLIT_ALL = "--split-all" in sys.argv
@@ -756,6 +763,10 @@ def main():
         print("Dithering: ENABLED (better for screentones/gradients)")
     else:
         print("Dithering: DISABLED (use --dither to enable)")
+    if ROTATE_ANGLE == 90:
+        print("Rotation: 90° counter-clockwise (--rotate-ccw)")
+    else:
+        print("Rotation: 90° clockwise (default)")
     
     # Determine number of threads
     max_workers = min(4, os.cpu_count() or 1)  # Use up to 4 threads
